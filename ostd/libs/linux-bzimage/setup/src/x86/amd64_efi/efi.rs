@@ -296,13 +296,43 @@ fn fill_screen_info(screen_info: &mut linux_boot_params::ScreenInfo) {
     let addr = protocol.frame_buffer().as_mut_ptr().addr();
     let (width, height) = protocol.current_mode_info().resolution();
 
-    // TODO: We are only filling in fields that will be accessed later in the kernel. We should
-    // fill in other important information such as the pixel format.
+    let mode = protocol.current_mode_info();
+    let Some(pitch) = mode
+        .stride()
+        .checked_mul(4)
+        .and_then(|bytes| u16::try_from(bytes).ok())
+    else {
+        uefi::println!("[EFI stub] Warning: Framebuffer pitch exceeds the boot protocol limit");
+        return;
+    };
+    let (Ok(width), Ok(height)) = (u16::try_from(width), u16::try_from(height)) else {
+        uefi::println!("[EFI stub] Warning: Framebuffer dimensions exceed the boot protocol limit");
+        return;
+    };
+    if width == 0 || height == 0 || usize::from(pitch) < usize::from(width) * 4 {
+        return;
+    }
+    // GOP formats describe byte order, while screen_info uses bit positions.
+    // https://uefi.org/specs/UEFI/2.10/12_Protocols_Console_Support.html#efi-graphics-output-protocol
+    let (red_pos, blue_pos) = match mode.pixel_format() {
+        PixelFormat::Rgb => (0, 16),
+        PixelFormat::Bgr => (16, 0),
+        _ => unreachable!(), // Unsupported formats were rejected above.
+    };
     screen_info.lfb_base = addr as u32;
     screen_info.ext_lfb_base = (addr >> 32) as u32;
-    screen_info.lfb_width = width.try_into().unwrap();
-    screen_info.lfb_height = height.try_into().unwrap();
-    screen_info.lfb_depth = 32; // We've checked the pixel format above.
+    screen_info.lfb_width = width;
+    screen_info.lfb_height = height;
+    screen_info.lfb_depth = 32;
+    screen_info.lfb_linelength = pitch;
+    screen_info.red_pos = red_pos;
+    screen_info.red_size = 8;
+    screen_info.green_pos = 8;
+    screen_info.green_size = 8;
+    screen_info.blue_pos = blue_pos;
+    screen_info.blue_size = 8;
+    screen_info.rsvd_pos = 24;
+    screen_info.rsvd_size = 8;
 
     uefi::println!(
         "[EFI stub] Found the framebuffer at {:#x} with {}x{} pixels",
